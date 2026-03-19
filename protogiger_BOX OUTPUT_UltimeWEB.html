@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Protocole Karpicke - V23</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; color: #0f172a; line-height: 1.6; }
+        .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+        .card { background: white; border-radius: 16px; border: 1px solid #e2e8f0; padding: 40px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        h1 { text-align: center; margin-bottom: 30px; font-weight: 800; font-size: 28px; }
+        .input-field { width: 100%; padding: 12px; border-radius: 10px; border: 2px solid #cbd5e1; font-size: 18px; margin-bottom: 20px; outline: none; }
+        .input-field:focus { border-color: #2563eb; }
+        .btn { padding: 12px 24px; border-radius: 10px; border: none; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 15px; display: inline-block; text-align: center; }
+        .btn:disabled { background: #cbd5e1; cursor: not-allowed; }
+        .btn-primary { background: #1e293b; color: white; }
+        .btn-accent { background: #2563eb; color: white; }
+        .btn-warning { background: #f59e0b; color: white; }
+        .btn-ghost { background: transparent; border: 1px solid #cbd5e1; color: #64748b; }
+        .btn-choice { width: 100%; text-align: left; padding: 18px; margin-bottom: 10px; display: flex; align-items: center; gap: 15px; border: 2px solid #e2e8f0; background: white; border-radius: 12px; cursor: pointer; }
+        .btn-choice:hover { border-color: #2563eb; background: #f0f7ff; }
+        .progress-bar { height: 8px; background: #f1f5f9; border-radius: 4px; overflow: hidden; margin-bottom: 20px; }
+        .progress-fill { height: 100%; background: #2563eb; transition: width 0.3s; }
+        .setup-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .word-grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; margin-bottom: 10px; }
+        .word-grid input { padding: 8px; border-radius: 6px; border: 1px solid #ddd; width: 100%; }
+        .tool-bar { display: flex; gap: 10px; margin-bottom: 25px; justify-content: center; flex-wrap: wrap; }
+        .label-mode { font-weight: 800; text-transform: uppercase; font-size: 14px; margin-bottom: 10px; display: block; }
+        
+        /* Styles pour JOL */
+        .jol-container { margin: 30px 0; text-align: center; }
+        .jol-scale { display: flex; justify-content: center; align-items: flex-end; gap: 20px; margin: 25px 0; }
+        .jol-option { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+        .jol-smiley { font-size: 40px; cursor: pointer; transition: transform 0.2s; }
+        .jol-smiley:hover { transform: scale(1.2); }
+        .jol-dot { width: 20px; height: 20px; cursor: pointer; accent-color: #2563eb; }
+        .jol-label { font-size: 14px; font-weight: bold; color: #64748b; width: 80px; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        const GOOGLE_SHEET_URL = "https://script.google.com/macros/s/AKfycbx9GyL7UQHyjYgacKQwI_MwCkyYpMXjkr7e-TKXJXTt4X7YCbcG44xlRLJSJVT6B5Zy/exec";
+
+        const shuffle = (arr) => [...arr].sort(() => Math.random() - 0.5);
+        const normalize = (s) => s ? s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "").trim() : "";
+
+        function App() {
+            const [phase, setPhase] = useState('SETUP');
+            const [words, setWords] = useState([]);
+            const [student, setStudent] = useState({ id: "", prenom: "", age: "", niveau: "", genre: "", groupe: "", date: new Date().toISOString().split('T')[0] });
+            const [sessionData, setSd] = useState(null);
+            const [blockNum, setBlockNum] = useState(1);
+            const [isSending, setIsSending] = useState(false);
+            const hasSent = useRef(false);
+
+            const loadList = (e) => {
+                const fr = new FileReader();
+                fr.onload = (ev) => {
+                    const imported = JSON.parse(ev.target.result);
+                    setWords(imported.map((w, i) => ({ id: i + 1, french: w.french, hungarian: w.hungarian })));
+                };
+                fr.readAsText(e.target.files[0]);
+            };
+
+            const importSession = (e) => {
+                const fr = new FileReader();
+                fr.onload = (ev) => {
+                    setSd(JSON.parse(ev.target.result));
+                    setPhase('DELAYED_SETUP');
+                };
+                fr.readAsText(e.target.files[0]);
+            };
+
+            const sendToSheet = async (finalData) => {
+                if (hasSent.current) return;
+                hasSent.current = true;
+                setIsSending(true);
+
+                const stats = (b, type) => finalData.blockStats[b] ? finalData.blockStats[b][type] : 0;
+                const payload = {
+                    id: finalData.student.id, prenom: finalData.student.prenom, date: finalData.student.date, age: finalData.student.age, niveau: finalData.student.niveau, genre: finalData.student.genre, groupe: finalData.student.groupe,
+                    nbMots: finalData.words.length,
+                    b1_s: stats(1, 'success'), b1_rs: stats(1, 'restudy'), b1_rt: stats(1, 'retest'), b1_d: stats(1, 'drop'),
+                    b2_s: stats(2, 'success'), b2_rs: stats(2, 'restudy'), b2_rt: stats(2, 'retest'), b2_d: stats(2, 'drop'),
+                    b3_s: stats(3, 'success'), b3_rs: stats(3, 'restudy'), b3_rt: stats(3, 'retest'), b3_d: stats(3, 'drop'),
+                    b4_s: stats(4, 'success'), b4_rs: stats(4, 'restudy'), b4_rt: stats(4, 'retest'), b4_d: stats(4, 'drop'),
+                    b5_s: stats(5, 'success'), b5_rs: stats(5, 'restudy'), b5_rt: stats(5, 'retest'), b5_d: stats(5, 'drop'),
+                    totalSuccess: finalData.words.filter(w => w.firstSuccess).length,
+                    totalRestudy: finalData.words.filter(w => w.condition === 'RESTUDY').length,
+                    totalRetest: finalData.words.filter(w => w.condition === 'RETEST').length,
+                    totalDrop: finalData.words.filter(w => w.condition === 'DROP').length,
+                    retestSuccess: finalData.retestSuccessCount,
+                    predRS: finalData.predictions.RESTUDY, predRT: finalData.predictions.RETEST, predD: finalData.predictions.DROP,
+                    time: Math.floor((Date.now() - finalData.startTime) / 60000),
+                    immScore: `${finalData.words.filter(w => w.immediateScore === 'OUI').length}/${finalData.words.length}`,
+                    delScore: `${finalData.words.filter(w => w.delayedScore === 'OUI').length}/${finalData.words.length}`,
+                    delRetestS: finalData.words.filter(w => w.condition === 'RETEST' && w.delayedScore === 'OUI').length,
+                    totalRT: finalData.words.filter(w => w.condition === 'RETEST').length,
+                    delRestudyS: finalData.words.filter(w => w.condition === 'RESTUDY' && w.delayedScore === 'OUI').length,
+                    totalRS: finalData.words.filter(w => w.condition === 'RESTUDY').length,
+                    delDropS: finalData.words.filter(w => w.condition === 'DROP' && w.delayedScore === 'OUI').length,
+                    totalD: finalData.words.filter(w => w.condition === 'DROP').length
+                };
+
+                try {
+                    await fetch(GOOGLE_SHEET_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+                    setPhase('FINISH');
+                } catch (e) {
+                    alert("Erreur d'envoi. Sauvegardez manuellement.");
+                }
+                setIsSending(false);
+            };
+
+            if (phase === 'SETUP') return (
+                <div className="container"><div className="card">
+                    <h1>Configuration</h1>
+                    <div className="tool-bar">
+                        <Button onClick={() => document.getElementById('is').click()} variant="warning">📂 J+1 : Charger Session</Button>
+                        <Button onClick={() => document.getElementById('il').click()} variant="ghost">📥 Charger Liste Mots</Button>
+                        <input type="file" id="is" style={{display:'none'}} onChange={importSession} />
+                        <input type="file" id="il" style={{display:'none'}} onChange={loadList} />
+                    </div>
+                    <div className="setup-grid">
+                        <input className="input-field" value={student.id} onChange={e => setStudent({...student, id: e.target.value})} placeholder="ID Sujet" />
+                        <input className="input-field" value={student.prenom} onChange={e => setStudent({...student, prenom: e.target.value})} placeholder="Prénom" />
+                        <input className="input-field" type="date" value={student.date} onChange={e => setStudent({...student, date: e.target.value})} />
+                        <select className="input-field" value={student.age} onChange={e => setStudent({...student, age: e.target.value})}>
+                            <option value="">Âge...</option>
+                            <option value="10 ans">10 ans</option>
+                            <option value="11 ans">11 ans</option>
+                            <option value="12 ans">12 ans</option>
+                            <option value="13 ans">13 ans</option>
+                        </select>
+                        <input className="input-field" value={student.niveau} onChange={e => setStudent({...student, niveau: e.target.value})} placeholder="Niveau" />
+                        <select className="input-field" value={student.genre} onChange={e => setStudent({...student, genre: e.target.value})}>
+                            <option value="">Genre...</option>
+                            <option value="Fille">Fille</option>
+                            <option value="Garçon">Garçon</option>
+                            <option value="Autre">Autre</option>
+                        </select>
+                        <select className="input-field" value={student.groupe} onChange={e => setStudent({...student, groupe: e.target.value})}>
+                            <option value="">Groupe...</option>
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                        </select>
+                    </div>
+                    <Button onClick={() => {
+                        if(!student.id || words.length === 0) return alert("Complétez l'ID et les mots.");
+                        setSd({ student, words: words.map(w => ({...w, firstSuccess:false, condition:null, remaining:0, lastSeen:0})), blockStats: {}, retestSuccessCount: 0, predictions: { RESTUDY: 0, RETEST: 0, DROP: 0 }, startTime: Date.now() });
+                        setPhase('INSTR');
+                    }} variant="accent" style={{width:'100%'}}>Démarrer</Button>
+                </div></div>
+            );
+
+            if (phase === 'INSTR') return (
+                <div className="container"><div className="card" style={{textAlign:'center'}}>
+                    <h2>Phase d'acquisition</h2>
+                    <p style={{fontSize: 22, margin: '30px 0', lineHeight: '1.4'}}>
+                        Essaye de retenir ces traductions. Plus tard, on te montrera le mot étranger et tu devras écrire le bon mot Français !
+                    </p>
+                    <Button onClick={() => setPhase('ACQ')} variant="accent">Commencer</Button>
+                </div></div>
+            );
+
+            if (phase === 'ACQ') return <Acquisition words={sessionData.words} onDone={() => setPhase('BLOCK')} />;
+
+            if (phase === 'BLOCK') return <BlockManager 
+                key={blockNum} session={sessionData} block={blockNum} 
+                onUpdate={nw => setSd({...sessionData, words:nw})} 
+                onStats={st => setSd(prev => ({...prev, blockStats: {...prev.blockStats, [blockNum]: st}}))}
+                onRetestSuccess={() => setSd(prev => ({...prev, retestSuccessCount: prev.retestSuccessCount + 1}))}
+                onNextBlock={n => setBlockNum(n)} onDone={() => setPhase('PRED')} />;
+
+            if (phase === 'PRED') return (
+                <div className="container"><div className="card">
+                    <h1>Prédictions</h1>
+                    <div style={{marginBottom:15}}><label>Rappel :</label> <input type="number" className="input-field" onChange={e => setSd({...sessionData, predictions: {...sessionData.predictions, RESTUDY: e.target.value}})} /></div>
+                    <div style={{marginBottom:15}}><label>Re-test :</label> <input type="number" className="input-field" onChange={e => setSd({...sessionData, predictions: {...sessionData.predictions, RETEST: e.target.value}})} /></div>
+                    <div style={{marginBottom:15}}><label>Rien :</label> <input type="number" className="input-field" onChange={e => setSd({...sessionData, predictions: {...sessionData.predictions, DROP: e.target.value}})} /></div>
+                    <Button onClick={() => setPhase('BREAK')} variant="accent" style={{width:'100%'}}>Valider</Button>
+                </div></div>
+            );
+
+            if (phase === 'BREAK') return <PauseView onDone={() => setPhase('FINAL')} />;
+
+            if (phase === 'FINAL') return <FinalTest words={sessionData.words} label="Test Immédiat" onDone={res => { 
+                setSd({...sessionData, words: sessionData.words.map(w => ({...w, immediateScore: res[w.id]}))}); setPhase('END'); 
+            }} />;
+
+            if (phase === 'END') return (
+                <div className="container"><div className="card" style={{textAlign:'center'}}>
+                    <h1>Partie 1 Terminée</h1>
+                    <p style={{marginBottom:20}}>Sauvegarde le fichier pour demain.</p>
+                    <Button onClick={() => {
+                        const b = new Blob([JSON.stringify(sessionData)], {type:"application/json"});
+                        const a = document.createElement("a"); a.href=URL.createObjectURL(b); a.download=`session_${sessionData.student.id}.json`; a.click();
+                    }} variant="warning">💾 Télécharger JSON</Button>
+                </div></div>
+            );
+
+            if (phase === 'DELAYED_SETUP') return (
+                <div className="container"><div className="card" style={{textAlign:'center'}}>
+                    <h2>Jour 2 : Test Différé</h2>
+                    <p style={{marginBottom:20}}>Sujet : <b>{sessionData.student.id}</b></p>
+                    <Button onClick={() => setPhase('DELAYED_TEST')} variant="accent">Démarrer</Button>
+                </div></div>
+            );
+            
+            if (phase === 'DELAYED_TEST') return <FinalTest words={sessionData.words} label="Test Différé" onDone={async (resultsMap) => {
+                const finalData = { ...sessionData, words: sessionData.words.map(w => ({...w, delayedScore: resultsMap[w.id]})) };
+                setSd(finalData);
+                await sendToSheet(finalData);
+            }} />;
+
+            if (isSending) return <div className="container"><div className="card" style={{textAlign:'center'}}><h1>Patientez SVP...</h1><p>Envoi des résultats en cours.</p></div></div>;
+
+            if (phase === 'FINISH') return (
+                <div className="container"><div className="card" style={{textAlign:'center'}}>
+                    <h1>Merci !</h1>
+                    <p>Tes résultats ont été enregistrés avec succès.</p>
+                    <Button onClick={() => window.location.reload()} variant="ghost">Retour Accueil</Button>
+                </div></div>
+            );
+
+            return null;
+        }
+
+        function FinalTest({ words, label, onDone }) {
+            const q = useMemo(() => shuffle(words), []);
+            const [idx, setIdx] = useState(0);
+            const [typed, setTyped] = useState("");
+            const resultsMap = useRef({});
+
+            const handleNext = () => {
+                const isCorrect = normalize(typed) === normalize(q[idx].french);
+                resultsMap.current[q[idx].id] = isCorrect ? 'OUI' : 'NON';
+                if (idx + 1 < q.length) { setIdx(idx + 1); setTyped(""); }
+                else { onDone(resultsMap.current); }
+            };
+
+            return (
+                <div className="container">
+                    <ProgressBar current={idx+1} total={q.length} label={label} />
+                    <div className="card" style={{textAlign:'center'}}>
+                        <div style={{fontSize:50, fontWeight:900}}>{q[idx].hungarian}</div>
+                        <input className="input-field" autoFocus value={typed} onChange={e => setTyped(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleNext()} />
+                        <Button onClick={handleNext} variant="accent">Valider</Button>
+                    </div>
+                </div>
+            );
+        }
+
+        function Acquisition({ words, onDone }) {
+            const list = useMemo(() => shuffle(words), []);
+            const [idx, setIdx] = useState(0);
+            return ( <div className="container"><ProgressBar current={idx+1} total={list.length} label="Mémorisation" /><div className="card" style={{textAlign:'center'}}><div style={{fontSize:54, fontWeight:900}}>{list[idx].hungarian}</div><div style={{fontSize:36, color:'#64748b', marginBottom:40}}>{list[idx].french}</div><Button onClick={() => idx < list.length - 1 ? setIdx(idx+1) : onDone()} variant="accent">Suivant</Button></div></div> );
+        }
+
+        function BlockManager({ session, block, onUpdate, onNextBlock, onDone, onStats, onRetestSuccess }) {
+            const queue = useMemo(() => shuffle(session.words.filter(w => !w.completed && w.lastSeen < block)), []);
+            const [ptr, setPtr] = useState(0);
+            const [step, setStep] = useState('TASK');
+            const [typed, setTyped] = useState("");
+            const [fb, setFb] = useState({ msg: "", show: false });
+            const [st, setSt] = useState({ success: 0, restudy: 0, retest: 0, drop: 0 });
+            const [jolValue, setJolValue] = useState(null);
+
+            if (queue.length === 0) { useEffect(() => { onStats(st); onDone(); }, []); return null; }
+            if (ptr >= queue.length) return <div className="container"><div className="card" style={{textAlign:'center'}}><h2>Fin du Bloc {block}</h2><Button onClick={() => { onStats(st); onNextBlock(block+1); }} variant="accent">Continuer</Button></div></div>;
+
+            const cur = session.words.find(w => w.id === queue[ptr].id);
+            const isT = !cur.firstSuccess || cur.condition === 'RETEST';
+            
+            const num = cur.remaining === 2 ? "1" : "2";
+            const modeLabel = !cur.firstSuccess ? "Initial" : (cur.condition === 'RETEST' ? `retest ${num}` : `rappel ${num}`);
+
+            const validate = () => {
+                const ok = normalize(typed) === normalize(cur.french);
+                if (!cur.firstSuccess) {
+                    if (ok) { setSt(p => ({...p, success: p.success+1})); setStep('CH'); }
+                    else { setFb({ msg: "Ooops, ce n'est pas la bonne réponse. Pas grave ! Essaye de retenir pour la prochaine fois", show: true }); setStep('FB'); }
+                } else {
+                    if (ok && cur.condition === 'RETEST') onRetestSuccess();
+                    const isFinishingRep = cur.remaining <= 1;
+                    const nw = session.words.map(w => w.id === cur.id ? {...w, remaining: cur.remaining-1, completed: isFinishingRep, lastSeen: block} : w);
+                    onUpdate(nw);
+                    setFb({ msg: ok ? "Correct !" : "Faux.", show: false });
+                    setStep('FB');
+                }
+            };
+
+            const confirm = (c) => {
+                setSt(p => { const key = c.toLowerCase() === 'restudy' ? 'restudy' : (c.toLowerCase() === 'retest' ? 'retest' : 'drop'); return {...p, [key]: p[key] + 1}; });
+                const nw = session.words.map(w => w.id === cur.id ? {...w, firstSuccess: true, condition: c, remaining: c==='DROP'?0:2, completed: c==='DROP', lastSeen: block} : w);
+                onUpdate(nw);
+                if (c === 'DROP') {
+                    setStep('JOL');
+                } else {
+                    setPtr(ptr+1); setStep('TASK'); setTyped("");
+                }
+            };
+
+            const submitJol = () => {
+                if(!jolValue) return;
+                const nw = session.words.map(w => w.id === cur.id ? {...w, jol: parseInt(jolValue)} : w);
+                onUpdate(nw);
+                setJolValue(null);
+                setPtr(ptr+1);
+                setStep('TASK');
+                setTyped("");
+            };
+
+            const smileys = ["☹️", "🙁", "😐", "🙂", "😀"];
+
+            return (
+                <div className="container"><ProgressBar current={ptr+1} total={queue.length} label={`Bloc ${block}`} /><div className="card" style={{textAlign:'center'}}>
+                    {step === 'TASK' && ( <div><div className="label-mode" style={{color: isT ? '#2563eb' : '#7c3aed'}}>{modeLabel}</div><div style={{fontSize:50, fontWeight:900}}>{cur.hungarian}</div>{isT ? <><input className="input-field" autoFocus value={typed} onChange={e => setTyped(e.target.value)} onKeyPress={e => e.key === 'Enter' && validate()} /><Button onClick={validate} variant="accent">Valider</Button></> : <><div style={{fontSize:36, margin:'20px 0'}}>{cur.french}</div><Button onClick={() => { 
+                        const isFinishingRep = cur.remaining <= 1;
+                        const updatedWords = session.words.map(w => w.id === cur.id ? {...w, remaining: cur.remaining-1, completed: isFinishingRep, lastSeen: block} : w);
+                        onUpdate(updatedWords);
+                        if(isFinishingRep) {
+                            setStep('JOL');
+                        } else {
+                            setPtr(ptr+1); setStep('TASK');
+                        }
+                    }} variant="accent">Suivant</Button></>}</div> )}
+                    
+                    {step === 'CH' && ( <div><h2>Correct !</h2><p style={{margin:'20px 0'}}>Pour mieux le retenir dans quelques jours, que souhaites-tu faire pour ce mot ?</p><button className="btn-choice" onClick={() => confirm('RETEST')}>🔄 Me retester plus tard</button><button className="btn-choice" onClick={() => confirm('RESTUDY')}>📖 Revoir la paire plus tard</button><button className="btn-choice" onClick={() => confirm('DROP')}>✅ Rien, c'est bon je le connais</button></div> )}
+                    
+                    {step === 'FB' && ( <div><h2>{fb.msg}</h2>{fb.show && <div style={{fontSize:36, fontWeight:900, margin:'20px 0'}}>{cur.hungarian} = {cur.french}</div>}<Button onClick={() => { 
+                        if (fb.show) {
+                            onUpdate(session.words.map(w => w.id === cur.id ? {...w, lastSeen: block} : w));
+                            setPtr(ptr+1); setStep('TASK'); setTyped("");
+                        } else {
+                            // Si on vient de finir un RETEST 2 (fb.show est false), on passe au JOL
+                            if (cur.remaining <= 0) setStep('JOL');
+                            else { setPtr(ptr+1); setStep('TASK'); setTyped(""); }
+                        }
+                    }} variant="primary">Continuer</Button></div> )}
+
+                    {step === 'JOL' && (
+                        <div className="jol-container">
+                            <h3>Dans une semaine, penses-tu être capable d'écrire le mot Français si on te montre le mot étranger ?</h3>
+                            <div className="jol-scale">
+                                <div className="jol-label">pas certain</div>
+                                {smileys.map((s, i) => (
+                                    <div key={i} className="jol-option">
+                                        <span className="jol-smiley" onClick={() => setJolValue(i + 1)}>{s}</span>
+                                        <input 
+                                            type="radio" 
+                                            name="jol" 
+                                            className="jol-dot" 
+                                            checked={jolValue === (i + 1)} 
+                                            onChange={() => setJolValue(i + 1)} 
+                                        />
+                                    </div>
+                                ))}
+                                <div className="jol-label">Très certain</div>
+                            </div>
+                            <Button onClick={submitJol} variant="accent" disabled={!jolValue}>Valider</Button>
+                        </div>
+                    )}
+                </div></div>
+            );
+        }
+
+        function PauseView({ onDone }) {
+            const [sec, setSec] = useState(300);
+            useEffect(() => { const t = setInterval(() => setSec(s => s > 0 ? s - 1 : 0), 1000); return () => clearInterval(t); }, []);
+            return (<div className="container" style={{textAlign:'center'}}><div className="card"><h2>Pause (5 min)</h2><div style={{fontSize:48, fontWeight:800, margin:'30px 0'}}>{Math.floor(sec/60)}:{String(sec%60).padStart(2,'0')}</div><Button onClick={onDone} variant="accent">Fin de pause</Button></div></div>);
+        }
+
+        function ProgressBar({ current, total, label }) {
+            return (
+                <div style={{marginBottom: 10}}>
+                    <div style={{display:'flex', justifyContent:'space-between', fontSize:12, color:'#64748b', marginBottom:5}}><span>{label}</span><span>{current} / {total}</span></div>
+                    <div className="progress-bar"><div className="progress-fill" style={{width: `${(current/total)*100}%`}}></div></div>
+                </div>
+            );
+        }
+
+        function Button({ children, onClick, variant, style, disabled }) { return <button className={`btn btn-${variant || 'primary'}`} onClick={onClick} style={style} disabled={disabled}>{children}</button>; }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
